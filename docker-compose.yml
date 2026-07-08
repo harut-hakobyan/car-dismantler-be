@@ -1,0 +1,60 @@
+services:
+    app:
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        container_name: car-dismantler-app
+        restart: unless-stopped
+        working_dir: /var/www
+        volumes:
+            - ./:/var/www
+        depends_on:
+            - mysql
+            - redis
+        networks:
+            - car-dismantler
+
+    nginx:
+        image: nginx:1.28-alpine
+        container_name: car-dismantler-nginx
+        restart: unless-stopped
+        ports:
+            - "8000:80"
+        volumes:
+            - ./:/var/www
+            - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+        depends_on:
+            - app
+        networks:
+            - car-dismantler
+
+    mysql:
+        image: mysql:8.4
+        container_name: car-dismantler-mysql
+        restart: unless-stopped
+        environment:
+            MYSQL_DATABASE: car_dismantler
+            MYSQL_ROOT_PASSWORD: root
+            MYSQL_USER: laravel
+            MYSQL_PASSWORD: secret
+        ports:
+            - "3306:3306"
+        volumes:
+            - mysql_data:/var/lib/mysql
+        networks:
+            - car-dismantler
+
+    redis:
+        image: redis:7-alpine
+        container_name: car-dismantler-redis
+        restart: unless-stopped
+        ports:
+            - "6379:6379"
+        networks:
+            - car-dismantler
+
+networks:
+    car-dismantler:
+
+volumes:
+    mysql_data:
