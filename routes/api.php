@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PartController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\TelegramBotController;
 use App\Http\Controllers\Api\UserController;
 
 
@@ -23,6 +24,7 @@ Route::get('/test', function () {
 
 // Public routes
 Route::post('/login', [AuthController::class, 'login']);
+Route::post('/telegram/webhook', [TelegramBotController::class, 'handle'])->name('telegram.webhook');
 
 Route::get('/permissions', [PermissionController::class, 'index']);
 Route::get('/car-makes', [CarMakeController::class, 'index']);
