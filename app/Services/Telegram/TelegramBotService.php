@@ -106,7 +106,7 @@ class TelegramBotService
         }
 
         if ($data === 'menu:list_parts') {
-            $this->sendPartsList($session, 1);
+            $this->sendPartsCarsList($session, 1);
             return;
         }
 
@@ -216,13 +216,56 @@ class TelegramBotService
 
         if (str_starts_with($data, 'parts_page:')) {
             $page = max(1, (int) substr($data, strlen('parts_page:')));
-            $this->sendPartsList($session, $page);
+            $this->sendPartsCarsList($session, $page);
+            return;
+        }
+
+        if (str_starts_with($data, 'parts_car_select:')) {
+            $carId = (int) substr($data, strlen('parts_car_select:'));
+            $this->sendPartCategoriesList($session, $carId, 1);
+            return;
+        }
+
+        if (str_starts_with($data, 'parts_car_page:')) {
+            $page = max(1, (int) substr($data, strlen('parts_car_page:')));
+            $this->sendPartsCarsList($session, $page);
+            return;
+        }
+
+        if (str_starts_with($data, 'parts_category_all:')) {
+            $carId = (int) substr($data, strlen('parts_category_all:'));
+            if ($carId > 0) {
+                $this->sendPartBrowserPartsList($session, $carId, null, 1);
+            }
+            return;
+        }
+
+        if (str_starts_with($data, 'parts_category_select:')) {
+            $payload = explode(':', substr($data, strlen('parts_category_select:')));
+            $carId = (int) ($payload[0] ?? 0);
+            $categoryIndex = (int) ($payload[1] ?? -1);
+            $category = $this->categoryForPartBrowser($carId, $categoryIndex);
+            if ($carId > 0 && $category !== null && $category !== '') {
+                $this->sendPartBrowserPartsList($session, $carId, $category, 1);
+            }
             return;
         }
 
         if (str_starts_with($data, 'part_view:')) {
             $partId = (int) substr($data, strlen('part_view:'));
             $this->sendPartDetails($session, $partId);
+            return;
+        }
+
+        if (str_starts_with($data, 'parts_browser_page:')) {
+            $payload = explode(':', substr($data, strlen('parts_browser_page:')));
+            $carId = (int) ($payload[0] ?? 0);
+            $category = (string) ($payload[1] ?? 'all');
+            $page = max(1, (int) ($payload[2] ?? 1));
+            if ($carId > 0) {
+                $categoryValue = $category === 'all' ? null : $this->categoryForPartBrowser($carId, (int) $category);
+                $this->sendPartBrowserPartsList($session, $carId, $categoryValue, $page);
+            }
             return;
         }
 
@@ -963,16 +1006,104 @@ class TelegramBotService
         );
     }
 
-    private function sendPartsList(TelegramSession $session, int $page): void
+    private function sendPartsCarsList(TelegramSession $session, int $page): void
     {
-        $query = Part::query()->orderByDesc('id');
+        $query = Car::query()
+            ->whereIn('id', Part::query()->select('car_id')->distinct())
+            ->orderByDesc('id');
+        $total = $query->count();
+        $cars = $query->forPage($page, self::PAGE_SIZE)->get();
+
+        $keyboard = [];
+        foreach ($cars as $car) {
+            $partCount = Part::query()->where('car_id', $car->id)->count();
+            $keyboard[] = [[
+                'text' => sprintf('%s %s %s (%d)', $car->make, $car->model, $car->year, $partCount),
+                'callback_data' => 'parts_car_select:'.$car->id,
+            ]];
+        }
+
+        $keyboard[] = $this->paginationRow(
+            $page,
+            (int) ceil(max(1, $total) / self::PAGE_SIZE),
+            'parts_car_page:'
+        );
+        $keyboard[] = [['text' => 'Չեղարկել', 'callback_data' => 'menu:cancel']];
+
+        $this->sendHtmlMessage(
+            $session->telegram_chat_id,
+            '<b>Ընտրեք ավտոմեքենան</b>'."\n".'Ընդամենը՝ <b>'.($total ?: 0).'</b>',
+            $this->inlineKeyboard($keyboard)
+        );
+    }
+
+    private function sendPartCategoriesList(TelegramSession $session, int $carId, int $page): void
+    {
+        $car = Car::find($carId);
+        if (! $car) {
+            $this->sendMessage($session->telegram_chat_id, 'Ավտոմեքենան չի գտնվել։', $this->mainMenuMarkup());
+            return;
+        }
+
+        $categories = $this->partCategoriesForCar($carId);
+
+        $total = Part::query()->where('car_id', $carId)->count();
+
+        $keyboard = [];
+        $keyboard[] = [[
+            'text' => 'Բոլոր մասերը ('.$total.')',
+            'callback_data' => 'parts_category_all:'.$carId,
+        ]];
+
+        foreach (array_chunk($categories, 2, true) as $row) {
+            $keyboard[] = [];
+            foreach ($row as $index => $category) {
+                $count = Part::query()
+                    ->where('car_id', $carId)
+                    ->where('category', $category)
+                    ->count();
+                $keyboard[count($keyboard) - 1][] = [
+                    'text' => sprintf('%s (%d)', $category, $count),
+                    'callback_data' => 'parts_category_select:'.$carId.':'.$index,
+                ];
+            }
+        }
+
+        $keyboard[] = [['text' => '↩ Վերադարձ մեքենաներին', 'callback_data' => 'menu:list_parts']];
+        $keyboard[] = [['text' => 'Չեղարկել', 'callback_data' => 'menu:cancel']];
+
+        $this->sendHtmlMessage(
+            $session->telegram_chat_id,
+            '<b>'.self::escape($car->make.' '.$car->model.' '.$car->year).'</b>'."\n".'Ընտրեք կատեգորիան',
+            $this->inlineKeyboard($keyboard)
+        );
+    }
+
+    private function sendPartBrowserPartsList(TelegramSession $session, int $carId, ?string $category, int $page): void
+    {
+        $car = Car::find($carId);
+        if (! $car) {
+            $this->sendMessage($session->telegram_chat_id, 'Ավտոմեքենան չի գտնվել։', $this->mainMenuMarkup());
+            return;
+        }
+
+        $query = Part::query()
+            ->where('car_id', $carId)
+            ->orderBy('category')
+            ->orderBy('name');
+
+        if ($category !== null && $category !== '') {
+            $query->where('category', $category);
+        }
+
         $total = $query->count();
         $parts = $query->forPage($page, self::PAGE_SIZE)->get();
+        $categoryToken = $category === null || $category === '' ? 'all' : (string) $this->categoryIndexForPartBrowser($carId, $category);
 
         $keyboard = [];
         foreach ($parts as $part) {
             $keyboard[] = [[
-                'text' => sprintf('#%d %s', $part->id, $part->name),
+                'text' => sprintf('%s (%d)', $part->name, $part->quantity),
                 'callback_data' => 'part_view:'.$part->id,
             ]];
         }
@@ -980,13 +1111,20 @@ class TelegramBotService
         $keyboard[] = $this->paginationRow(
             $page,
             (int) ceil(max(1, $total) / self::PAGE_SIZE),
-            'parts_page:'
+            'parts_browser_page:'.$carId.':'.$categoryToken.':'
         );
-        $keyboard[] = [['text' => 'Մենյու', 'callback_data' => 'menu:cancel']];
+        $keyboard[] = [['text' => '↩ Վերադարձ կատեգորիաներին', 'callback_data' => 'parts_car_select:'.$carId]];
+        $keyboard[] = [['text' => 'Չեղարկել', 'callback_data' => 'menu:cancel']];
+
+        $header = '<b>'.self::escape($car->make.' '.$car->model.' '.$car->year).'</b>';
+        if ($category !== null && $category !== '') {
+            $header .= "\n".'<i>'.self::escape($category).'</i>';
+        }
+        $header .= "\n".'Ընդամենը՝ <b>'.$total.'</b>';
 
         $this->sendHtmlMessage(
             $session->telegram_chat_id,
-            '<b>Մասեր</b>'."\n".'Ընդամենը՝ <b>'.($total ?: 0).'</b>',
+            $header,
             $this->inlineKeyboard($keyboard)
         );
     }
@@ -1404,6 +1542,30 @@ class TelegramBotService
             'fuel_system' => 'Վառելիքի համակարգ',
             'other' => 'Այլ',
         ];
+    }
+
+    private function partCategoriesForCar(int $carId): array
+    {
+        return Part::query()
+            ->where('car_id', $carId)
+            ->select('category')
+            ->distinct()
+            ->orderBy('category')
+            ->pluck('category')
+            ->all();
+    }
+
+    private function categoryForPartBrowser(int $carId, int $index): ?string
+    {
+        $categories = $this->partCategoriesForCar($carId);
+        return $categories[$index] ?? null;
+    }
+
+    private function categoryIndexForPartBrowser(int $carId, string $category): int
+    {
+        $categories = $this->partCategoriesForCar($carId);
+        $index = array_search($category, $categories, true);
+        return $index === false ? 0 : (int) $index;
     }
 
     private function conditionOptions(): array
