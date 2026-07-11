@@ -66,6 +66,7 @@ class DatabaseSeeder extends Seeder
         }
 
         $this->call(CarCatalogSeeder::class);
+        $this->call(KiaK4Seeder::class);
 
         $customers = [
             ['name' => 'AutoFix Garage', 'email' => 'orders@autofix.test', 'phone' => '+1 555 0110', 'address' => '120 Market Street, Denver, CO'],
