@@ -1,0 +1,83 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy backend and frontend
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          command_timeout: 30m
+          script: |
+            set -e
+
+            cd ~/car-dismantler
+
+            echo "Updating backend..."
+            cd car-dismantler-be
+            git fetch origin master
+            git reset --hard origin/master
+
+            echo "Updating frontend..."
+            cd ../car-dismantler-fe
+            git fetch origin master
+            git reset --hard origin/master
+
+            echo "Returning to deployment directory..."
+            cd ..
+
+            echo "Building frontend and backend..."
+            docker compose \
+              --env-file .env.production \
+              -f docker-compose.production.yml \
+              build --no-cache
+
+            echo "Starting containers..."
+            docker compose \
+              --env-file .env.production \
+              -f docker-compose.production.yml \
+              up -d --remove-orphans
+
+            echo "Running Laravel migrations..."
+            docker compose \
+              --env-file .env.production \
+              -f docker-compose.production.yml \
+              exec -T backend-app \
+              php artisan migrate --force
+
+            echo "Clearing Laravel caches..."
+            docker compose \
+              --env-file .env.production \
+              -f docker-compose.production.yml \
+              exec -T backend-app \
+              php artisan optimize:clear
+
+            echo "Optimizing Laravel..."
+            docker compose \
+              --env-file .env.production \
+              -f docker-compose.production.yml \
+              exec -T backend-app \
+              php artisan optimize
+
+            echo "Removing unused Docker images..."
+            docker image prune -f
+
+            echo "Container status:"
+            docker compose \
+              --env-file .env.production \
+              -f docker-compose.production.yml \
+              ps
+
+            echo "Deployment completed successfully."
