@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Activity;
 use App\Models\Order;
 use App\Models\Part;
+use App\Services\Inventory\PartTranslationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -14,6 +15,11 @@ use Illuminate\Validation\Rule;
 class PartController extends Controller
 {
     use RespondsWithPagination;
+
+    public function __construct(
+        private readonly PartTranslationService $translations
+    ) {
+    }
 
     public function index(Request $request): JsonResponse
     {
@@ -37,7 +43,10 @@ class PartController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $this->validatePart($request);
-        $part = Part::create($validated);
+        $part = Part::create([
+            ...$validated,
+            ...$this->translatedNames($validated['name']),
+        ]);
 
         return response()->json($this->mapPart($part), 201);
     }
@@ -45,7 +54,10 @@ class PartController extends Controller
     public function update(Request $request, Part $part): JsonResponse
     {
         $validated = $this->validatePart($request, $part->id);
-        $part->update($validated);
+        $part->update([
+            ...$validated,
+            ...$this->translatedNames($validated['name']),
+        ]);
 
         return response()->json($this->mapPart($part->refresh()));
     }
@@ -115,9 +127,12 @@ class PartController extends Controller
                 ? [
                     'id' => $part->id,
                     'label' => sprintf('%s - %s', $part->name, $part->sku),
+                    'name' => $part->name,
                     'sku' => $part->sku,
                     'price' => (float) $part->price,
                     'quantity' => $part->quantity,
+                    'name_ru' => $part->name_ru,
+                    'name_hy' => $part->name_hy,
                 ]
                 : $this->mapPart($part))
         );
@@ -135,7 +150,7 @@ class PartController extends Controller
             'price' => ['required', 'numeric', 'min:0'],
             'quantity' => ['required', 'integer', 'min:0'],
             'status' => ['required', 'string', Rule::in(['active', 'inactive', 'pending'])],
-            'image_url' => ['nullable', 'string', 'max:255'],
+            'image_url' => ['nullable', 'string', 'max:2048'],
         ]);
     }
 
@@ -145,6 +160,8 @@ class PartController extends Controller
             'id' => $part->id,
             'car_id' => $part->car_id,
             'name' => $part->name,
+            'name_ru' => $part->name_ru,
+            'name_hy' => $part->name_hy,
             'sku' => $part->sku,
             'category' => $part->category,
             'condition' => $part->condition,
@@ -153,6 +170,14 @@ class PartController extends Controller
             'quantity' => $part->quantity,
             'status' => $part->status,
             'image_url' => $part->image_url,
+        ];
+    }
+
+    private function translatedNames(string $name): array
+    {
+        return [
+            'name_ru' => $this->translations->translate($name)['ru'],
+            'name_hy' => $this->translations->translate($name)['hy'],
         ];
     }
 }

@@ -7,8 +7,11 @@ use App\Http\Controllers\Controller;
 use App\Models\Car;
 use App\Models\CarMake;
 use App\Models\CarModel;
+use App\Models\PartTemplate;
+use App\Services\Inventory\PartCatalogService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Validation\Rule;
 
 class CarController extends Controller
@@ -71,6 +74,42 @@ class CarController extends Controller
         );
     }
 
+    public function catalogPreview(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'car_make_id' => ['required', 'integer', 'exists:car_makes,id'],
+            'car_model_id' => ['required', 'integer', 'exists:car_models,id'],
+            'year' => ['required', 'integer', 'min:1900', 'max:2100'],
+        ]);
+
+        $templates = PartTemplate::query()
+            ->where('car_make_id', $validated['car_make_id'])
+            ->where('car_model_id', $validated['car_model_id'])
+            ->where(function ($query) use ($validated) {
+                $query->whereNull('start_year')
+                    ->orWhere('start_year', '<=', $validated['year']);
+            })
+            ->where(function ($query) use ($validated) {
+                $query->whereNull('end_year')
+                    ->orWhere('end_year', '>=', $validated['year']);
+            })
+            ->orderBy('sort_order')
+            ->get()
+            ->map(fn (PartTemplate $template) => [
+                'id' => $template->id,
+                'name' => $template->name,
+                'name_ru' => $template->name_ru,
+                'name_hy' => $template->name_hy,
+                'category' => $template->category,
+                'path' => $template->path,
+                'sku' => $template->sku,
+                'url' => $template->url,
+                'image_url' => $template->image_url,
+            ]);
+
+        return response()->json($templates);
+    }
+
     private function validateCar(Request $request, ?int $ignoreId = null): array
     {
         return $request->validate([
@@ -83,6 +122,8 @@ class CarController extends Controller
             'status' => ['required', 'string', Rule::in(['active', 'inactive', 'pending'])],
             'purchase_price' => ['required', 'numeric', 'min:0'],
             'sale_price' => ['required', 'numeric', 'min:0'],
+            'excluded_parts' => ['sometimes', 'array'],
+            'excluded_parts.*' => ['string', 'max:255'],
         ]);
     }
 
@@ -95,11 +136,13 @@ class CarController extends Controller
             ->firstOrFail();
 
         $car->fill([
-            ...$validated,
+            ...Arr::except($validated, ['excluded_parts']),
             'make' => $make->name,
             'model' => $model->name,
         ]);
         $car->save();
+
+        app(PartCatalogService::class)->attachToCar($car, $validated['excluded_parts'] ?? []);
 
         return $car;
     }

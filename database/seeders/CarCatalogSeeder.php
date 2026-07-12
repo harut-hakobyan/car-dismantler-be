@@ -127,40 +127,55 @@ class CarCatalogSeeder extends Seeder
 
     public function run(): void
     {
-        CarModel::query()->delete();
-        CarMake::query()->delete();
-
         foreach (self::CATALOG as $makeName => $models) {
-            $make = CarMake::query()->create([
-                'name' => $makeName,
-                'slug' => Str::slug($makeName),
-                'region' => null,
-            ]);
+            $make = CarMake::query()->updateOrCreate(
+                [
+                    'name' => $makeName,
+                ],
+                [
+                    'slug' => Str::slug($makeName),
+                    'region' => null,
+                ]
+            );
 
             foreach ($models as $modelName) {
-                CarModel::query()->create([
-                    'car_make_id' => $make->id,
-                    'name' => $modelName,
-                    'slug' => Str::slug($modelName),
-                ]);
+                CarModel::query()->updateOrCreate(
+                    [
+                        'car_make_id' => $make->id,
+                        'name' => $modelName,
+                    ],
+                    [
+                        'slug' => Str::slug($modelName),
+                    ]
+                );
             }
         }
 
-        foreach (Car::query()->get() as $car) {
-            $makeId = CarMake::query()->where('name', $car->make)->value('id');
-            $modelId = $makeId
-                ? CarModel::query()
-                    ->where('car_make_id', $makeId)
+        Car::query()
+            ->whereNull('car_make_id')
+            ->orWhereNull('car_model_id')
+            ->each(function (Car $car): void {
+                $make = CarMake::query()
+                    ->where('name', $car->make)
+                    ->first();
+
+                if (!$make) {
+                    return;
+                }
+
+                $model = CarModel::query()
+                    ->where('car_make_id', $make->id)
                     ->where('name', $car->model)
-                    ->value('id')
-                : null;
+                    ->first();
 
-            if ($makeId && $modelId) {
+                if (!$model) {
+                    return;
+                }
+
                 $car->update([
-                    'car_make_id' => $makeId,
-                    'car_model_id' => $modelId,
+                    'car_make_id' => $make->id,
+                    'car_model_id' => $model->id,
                 ]);
-            }
-        }
+            });
     }
 }
