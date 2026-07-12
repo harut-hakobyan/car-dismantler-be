@@ -90,11 +90,11 @@ class PartController extends Controller
         Activity::create([
             'label' => 'Part sold',
             'description' => sprintf(
-                '%s x%s sold to %s for $%s.',
+                '%s x%s sold to %s for %s.',
                 $part->name,
                 $validated['quantity'],
                 $validated['customer_name'],
-                number_format($total, 2)
+                number_format($total, 0, '.', ',')." \u{058F}"
             ),
         ]);
 

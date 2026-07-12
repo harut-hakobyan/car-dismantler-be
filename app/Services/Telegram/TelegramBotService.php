@@ -9,6 +9,7 @@ use App\Models\Part;
 use App\Models\TelegramSession;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
@@ -198,7 +199,33 @@ class TelegramBotService
                 ...($session->payload ?? []),
                 'condition' => $condition,
             ]);
-            $this->sendMessage($chatId, 'Ուղարկեք նկարագրությունը կամ գրեք "-"՝ բաց թողնելու համար։');
+            $this->sendMessage(
+                $chatId,
+                'Ուղարկեք նկարագրությունը կամ սեղմեք Բաց թողնել՝ բաց թողնելու համար։',
+                $this->partDescriptionMarkup()
+            );
+            return;
+        }
+
+        if ($data === 'part_sku_skip') {
+            if (($session->flow ?? null) === 'part' && ($session->step ?? null) === 'sku') {
+                $this->setSession($session, 'part', 'category', [
+                    ...($session->payload ?? []),
+                    'sku' => '',
+                ]);
+                $this->sendCategoryPrompt($session);
+            }
+            return;
+        }
+
+        if ($data === 'part_description_skip') {
+            if (($session->flow ?? null) === 'part' && ($session->step ?? null) === 'description') {
+                $this->setSession($session, 'part', 'price', [
+                    ...($session->payload ?? []),
+                    'description' => '',
+                ]);
+                $this->sendMessage($chatId, 'Ուղարկեք գինը։');
+            }
             return;
         }
 
@@ -379,6 +406,11 @@ class TelegramBotService
             }
 
             if ($session->flow === 'part_sell') {
+                if ($session->step === 'quantity') {
+                    $this->acceptPartSellQuantity($session, $text);
+                    return;
+                }
+
                 if ($session->step === 'price') {
                     $this->acceptPartSellPrice($session, $text);
                     return;
@@ -427,11 +459,37 @@ class TelegramBotService
             'quantity' => 1,
         ]);
 
-        $this->sendMessage(
-            $session->telegram_chat_id,
-            sprintf('%s վաճառք։ Ընտրեք քանակը։', $part->name),
-            $this->sellQuantityMarkup($part->id, $part->quantity)
-        );
+        $this->sendPartSellQuantityPrompt($session, $part);
+    }
+
+    private function acceptPartSellQuantity(TelegramSession $session, string $text): void
+    {
+        Validator::make(['quantity' => $text], [
+            'quantity' => ['required', 'integer', 'min:1'],
+        ])->validate();
+
+        $payload = $session->payload ?? [];
+        $part = Part::find((int) data_get($payload, 'part_id'));
+
+        if (! $part) {
+            $this->resetSession($session);
+            $this->sendMessage($session->telegram_chat_id, 'Մասը չի գտնվել։', $this->mainMenuMarkup());
+            return;
+        }
+
+        $quantity = (int) $text;
+        if ($quantity > $part->quantity) {
+            $this->sendMessage($session->telegram_chat_id, 'Քանակը բավարար չէ։', $this->mainMenuMarkup());
+            return;
+        }
+
+        $this->setSession($session, 'part_sell', 'price', [
+            ...$payload,
+            'quantity' => $quantity,
+            'sale_price' => (float) $part->price,
+        ]);
+
+        $this->sendPartSellPricePrompt($session, $part);
     }
 
     private function acceptPartSellPrice(TelegramSession $session, string $text): void
@@ -524,7 +582,11 @@ class TelegramBotService
             ...($session->payload ?? []),
             'name' => $text,
         ]);
-        $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք SKU-ն։');
+        $this->sendMessage(
+            $session->telegram_chat_id,
+            'Ուղարկեք SKU-ն կամ սեղմեք Բաց թողնել՝ բաց թողնելու համար։',
+            $this->partSkuMarkup()
+        );
     }
 
     private function acceptPartSku(TelegramSession $session, string $text): void
@@ -551,7 +613,11 @@ class TelegramBotService
             ...($session->payload ?? []),
             'description' => $description,
         ]);
-        $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք գինը։');
+        $this->sendMessage(
+            $session->telegram_chat_id,
+            'Ուղարկեք գինը կամ սեղմեք Բաց թողնել՝ բաց թողնելու համար։',
+            $this->partDescriptionMarkup()
+        );
     }
 
     private function acceptPartPrice(TelegramSession $session, string $text): void
@@ -749,8 +815,8 @@ class TelegramBotService
             'Տարի: <b>'.self::escape((string) data_get($payload, 'year')).'</b>',
             'Գույն: <b>'.self::escape((string) data_get($payload, 'color')).'</b>',
             'Վազք: <b>'.self::escape((string) data_get($payload, 'mileage')).'</b>',
-            'Գնման գին: <b>$'.number_format((float) data_get($payload, 'purchase_price'), 2).'</b>',
-            'Վաճառքի գին: <b>$'.number_format((float) data_get($payload, 'sale_price'), 2).'</b>',
+            'Գնման գին: <b>'.$this->formatCurrency((float) data_get($payload, 'purchase_price')).'</b>',
+            'Վաճառքի գին: <b>'.$this->formatCurrency((float) data_get($payload, 'sale_price')).'</b>',
         ]);
 
         $this->sendHtmlMessage($session->telegram_chat_id, $text, $this->inlineKeyboard([
@@ -773,7 +839,7 @@ class TelegramBotService
             'Կատեգորիա: <b>'.self::escape((string) data_get($payload, 'category')).'</b>',
             'Վիճակ: <b>'.self::escape((string) data_get($payload, 'condition')).'</b>',
             'Նկարագրություն: <b>'.self::escape((string) (data_get($payload, 'description') ?: '-')).'</b>',
-            'Գին: <b>$'.number_format((float) data_get($payload, 'price'), 2).'</b>',
+            'Գին: <b>'.$this->formatCurrency((float) data_get($payload, 'price')).'</b>',
             'Քանակ: <b>'.self::escape((string) data_get($payload, 'quantity')).'</b>',
         ]);
 
@@ -824,13 +890,19 @@ class TelegramBotService
         $validated = Validator::make($payload, [
             'car_id' => ['required', 'integer', 'exists:cars,id'],
             'name' => ['required', 'string', 'min:2', 'max:120'],
-            'sku' => ['required', 'string', 'max:60'],
+            'sku' => ['nullable', 'string', 'max:60'],
             'category' => ['required', 'string', 'max:120'],
             'condition' => ['required', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
             'price' => ['required', 'numeric', 'min:0'],
             'quantity' => ['required', 'integer', 'min:0'],
         ])->validate();
+
+        $validated['sku'] = $this->normalizePartSku(
+            (string) ($validated['sku'] ?? ''),
+            (string) $validated['name'],
+            (int) $validated['car_id']
+        );
 
         $matchingParts = Part::query()
             ->where('car_id', (int) $validated['car_id'])
@@ -881,7 +953,7 @@ class TelegramBotService
 
         foreach ($matchingParts->unique(fn (Part $part) => number_format((float) $part->price, 2, '.', '')) as $part) {
             $priceRows[] = [
-                'text' => '$'.number_format((float) $part->price, 2),
+                'text' => $this->formatCurrency((float) $part->price),
                 'callback_data' => 'part_duplicate_price:'.number_format((float) $part->price, 2, '.', ''),
             ];
         }
@@ -895,9 +967,9 @@ class TelegramBotService
         $summary = [];
         foreach ($matchingParts->take(3) as $part) {
             $summary[] = sprintf(
-                '#%d $%s x%d',
+                '#%d %s x%d',
                 $part->id,
-                number_format((float) $part->price, 2),
+                $this->formatCurrency((float) $part->price),
                 $part->quantity
             );
         }
@@ -907,7 +979,7 @@ class TelegramBotService
             '<b>Այս մասը արդեն գոյություն ունի։</b>'."\n".
             'Ընտրեք գինը, որի վրա ավելացնել քանակը։'."\n".
             'Առկա՝ '.implode(', ', $summary)."\n".
-            'Նոր գին՝ <b>$'.number_format($incomingPrice, 2).'</b>',
+            'Նոր գին՝ <b>'.$this->formatCurrency($incomingPrice).'</b>',
             $this->inlineKeyboard($keyboard)
         );
     }
@@ -919,13 +991,19 @@ class TelegramBotService
         $validated = Validator::make($payload, [
             'car_id' => ['required', 'integer', 'exists:cars,id'],
             'name' => ['required', 'string', 'min:2', 'max:120'],
-            'sku' => ['required', 'string', 'max:60'],
+            'sku' => ['nullable', 'string', 'max:60'],
             'category' => ['required', 'string', 'max:120'],
             'condition' => ['required', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
             'price' => ['required', 'numeric', 'min:0'],
             'quantity' => ['required', 'integer', 'min:0'],
         ])->validate();
+
+        $validated['sku'] = $this->normalizePartSku(
+            (string) ($validated['sku'] ?? ''),
+            (string) $validated['name'],
+            (int) $validated['car_id']
+        );
 
         $part = Part::query()
             ->where('car_id', (int) $validated['car_id'])
@@ -1203,7 +1281,7 @@ class TelegramBotService
             'Կատեգորիա: <b>'.self::escape($part->category).'</b>',
             'Վիճակ: <b>'.self::escape($part->condition).'</b>',
             'Նկարագրություն: '.self::escape($part->description ?: '-'),
-            'Գին: <b>$'.number_format((float) $part->price, 2).'</b>',
+            'Գին: <b>'.$this->formatCurrency((float) $part->price).'</b>',
             'Քանակ: <b>'.$part->quantity.'</b>',
             'Կարգավիճակ: <b>'.self::escape($part->status).'</b>',
         ]);
@@ -1262,11 +1340,11 @@ class TelegramBotService
         \App\Models\Activity::create([
             'label' => 'Վաճառված մաս',
             'description' => sprintf(
-                '%s x%s վաճառված է %s-ին՝ $%s արժեքով։',
+                '%s x%s վաճառված է %s-ին՝ %s արժեքով։',
                 $part->name,
                 $quantity,
                 $customerName,
-                number_format($total, 2)
+                $this->formatCurrency($total)
             ),
         ]);
 
@@ -1296,8 +1374,8 @@ class TelegramBotService
             'Գույն: '.$car->color,
             'Վազք: '.$car->mileage,
             'Վիճակ: '.$car->status,
-            'Գնում: '.$car->purchase_price,
-            'Վաճառք: '.$car->sale_price,
+            'Գնում: '.$this->formatCurrency((float) $car->purchase_price),
+            'Վաճառք: '.$this->formatCurrency((float) $car->sale_price),
         ]);
 
         $this->sendHtmlMessage($session->telegram_chat_id, $text, $this->inlineKeyboard([
@@ -1326,7 +1404,7 @@ class TelegramBotService
             'Կատեգորիա: '.$part->category,
             'Վիճակ: '.$part->condition,
             'Նկարագրություն: '.($part->description ?: '-'),
-            'Գին: '.$part->price,
+            'Գին: '.$this->formatCurrency((float) $part->price),
             'Քանակ: '.$part->quantity,
             'Կարգավիճակ: '.$part->status,
         ]);
@@ -1347,9 +1425,9 @@ class TelegramBotService
         $this->sendHtmlMessage(
             $session->telegram_chat_id,
             sprintf(
-                '<b>%s</b>'."\n".'Լռելյայն վաճառքի գին՝ <b>$%s</b>'."\n".'Ուղարկեք նոր գին կամ սեղմեք լռելյայնը։',
+                '<b>%s</b>'."\n".'Լռելյայն վաճառքի գին՝ <b>%s</b>'."\n".'Ուղարկեք նոր գին կամ սեղմեք լռելյայնը։',
                 self::escape($part->name),
-                number_format($salePrice, 2)
+                $this->formatCurrency($salePrice)
             ),
             $this->inlineKeyboard([
                 [
@@ -1357,6 +1435,20 @@ class TelegramBotService
                     ['text' => '✖ Չեղարկել', 'callback_data' => 'menu:cancel'],
                 ],
             ])
+        );
+    }
+
+    private function sendPartSellQuantityPrompt(TelegramSession $session, ?Part $part): void
+    {
+        if (! $part) {
+            $this->sendMessage($session->telegram_chat_id, 'Մասը չի գտնվել։', $this->mainMenuMarkup());
+            return;
+        }
+
+        $this->sendMessage(
+            $session->telegram_chat_id,
+            sprintf('%s վաճառք։ Ընտրեք քանակը կամ գրեք թվով։', $part->name),
+            $this->sellQuantityMarkup($part->id, $part->quantity)
         );
     }
 
@@ -1373,14 +1465,25 @@ class TelegramBotService
             ['car', 'sale_price'] => $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք վաճառքի գինը։'),
             ['part', 'car'] => $this->sendCarPrompt($session, 1),
             ['part', 'name'] => $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք մասի անունը։'),
-            ['part', 'sku'] => $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք SKU-ն։'),
+            ['part', 'sku'] => $this->sendMessage(
+                $session->telegram_chat_id,
+                'Ուղարկեք SKU-ն կամ սեղմեք Բաց թողնել՝ բաց թողնելու համար։',
+                $this->partSkuMarkup()
+            ),
             ['part', 'category'] => $this->sendCategoryPrompt($session),
             ['part', 'condition'] => $this->sendConditionPrompt($session),
-            ['part', 'description'] => $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք նկարագրությունը կամ գրեք "-"՝ բաց թողնելու համար։'),
+            ['part', 'description'] => $this->sendMessage(
+                $session->telegram_chat_id,
+                'Ուղարկեք նկարագրությունը կամ սեղմեք Բաց թողնել՝ բաց թողնելու համար։',
+                $this->partDescriptionMarkup()
+            ),
             ['part', 'price'] => $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք գինը։'),
             ['part', 'quantity'] => $this->sendMessage($session->telegram_chat_id, 'Ուղարկեք քանակը։'),
             ['part_search', 'query'] => $this->sendMessage($session->telegram_chat_id, 'Գրեք մասի անունը, SKU-ն, կատեգորիան կամ վիճակը որոնելու համար։'),
             ['part_search', 'results'] => $this->sendPartSearchResults($session, 1),
+            ['part_sell', 'quantity'] => ($part = Part::find((int) data_get($session->payload, 'part_id')))
+                ? $this->sendPartSellQuantityPrompt($session, $part)
+                : $this->sendMessage($session->telegram_chat_id, 'Մասը չի գտնվել։', $this->mainMenuMarkup()),
             ['part_sell', 'price'] => ($part = Part::find((int) data_get($session->payload, 'part_id')))
                 ? $this->sendPartSellPricePrompt($session, $part)
                 : $this->sendMessage($session->telegram_chat_id, 'Մասը չի գտնվել։', $this->mainMenuMarkup()),
@@ -1603,6 +1706,55 @@ class TelegramBotService
     private static function escape(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    private function normalizePartSku(string $sku, string $name, int $carId): string
+    {
+        $sku = trim($sku);
+        if ($sku !== '') {
+            return $sku;
+        }
+
+        $base = Str::of($name)
+            ->upper()
+            ->ascii()
+            ->replaceMatches('/[^A-Z0-9]+/', '-')
+            ->trim('-')
+            ->limit(12, '')
+            ->toString();
+
+        $base = $base !== '' ? $base : 'PART';
+
+        do {
+            $generated = sprintf('%s-%d-%s', $base, $carId, Str::upper(Str::random(4)));
+        } while (Part::where('sku', $generated)->exists());
+
+        return $generated;
+    }
+
+    private function partSkuMarkup(): array
+    {
+        return $this->inlineKeyboard([
+            [
+                ['text' => '⏭ Բաց թողնել', 'callback_data' => 'part_sku_skip'],
+                ['text' => '✖ Չեղարկել', 'callback_data' => 'flow:cancel'],
+            ],
+        ]);
+    }
+
+    private function partDescriptionMarkup(): array
+    {
+        return $this->inlineKeyboard([
+            [
+                ['text' => '⏭ Բաց թողնել', 'callback_data' => 'part_description_skip'],
+                ['text' => '✖ Չեղարկել', 'callback_data' => 'flow:cancel'],
+            ],
+        ]);
+    }
+
+    private function formatCurrency(float $value): string
+    {
+        return number_format($value, 0, '.', ',')." \u{058F}";
     }
 
     private function paginationRow(int $page, int $totalPages, string $prefix): array
