@@ -19,102 +19,113 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.PORT }}
-          command_timeout: 30m
+          command_timeout: 40m
           script: |
             set -e
 
-            echo "===================================="
-            echo "Updating Backend"
-            echo "===================================="
-            cd ~/car-dismantler/car-dismantler-be
-            git fetch origin master
-            git reset --hard origin/master
+            (
+              flock -n 9 || {
+                echo "Another deployment is already running."
+                exit 1
+              }
 
-            echo "===================================="
-            echo "Updating Frontend"
-            echo "===================================="
-            cd ~/car-dismantler/car-dismantler-fe
-            git fetch origin master
-            git reset --hard origin/master
+              COMPOSE="docker compose --project-name car-dismantler --env-file .env.production -f docker-compose.production.yml"
 
-            echo "===================================="
-            echo "Building Docker Images"
-            echo "===================================="
-            cd ~/car-dismantler
+              echo "===================================="
+              echo "Updating Backend"
+              echo "===================================="
 
-            docker compose \
-              --env-file .env.production \
-              -f docker-compose.production.yml \
-              build --no-cache
+              cd ~/car-dismantler/car-dismantler-be
+              git fetch origin master
+              git reset --hard origin/master
 
-            echo "===================================="
-            echo "Recreating Containers"
-            echo "===================================="
+              echo "===================================="
+              echo "Updating Frontend"
+              echo "===================================="
 
-            docker compose \
-              --env-file .env.production \
-              -f docker-compose.production.yml \
-              up -d --force-recreate --remove-orphans
+              cd ~/car-dismantler/car-dismantler-fe
+              git fetch origin master
+              git reset --hard origin/master
 
-            echo "Waiting for containers..."
-            sleep 10
+              echo "===================================="
+              echo "Building Docker Images"
+              echo "===================================="
 
-            echo "===================================="
-            echo "Running Migrations & Seeders"
-            echo "===================================="
+              cd ~/car-dismantler
 
-            docker compose \
-              --env-file .env.production \
-              -f docker-compose.production.yml \
-              exec -T backend-app \
-              php artisan migrate --seed --force
+              $COMPOSE build --no-cache
 
-            echo "===================================="
-            echo "Clearing Cache"
-            echo "===================================="
+              echo "===================================="
+              echo "Stopping Existing Containers"
+              echo "===================================="
 
-            docker compose \
-              --env-file .env.production \
-              -f docker-compose.production.yml \
-              exec -T backend-app \
-              php artisan optimize:clear
+              $COMPOSE down --remove-orphans || true
 
-            echo "===================================="
-            echo "Optimizing Laravel"
-            echo "===================================="
+              echo "===================================="
+              echo "Removing Stale Temporary Containers"
+              echo "===================================="
 
-            docker compose \
-              --env-file .env.production \
-              -f docker-compose.production.yml \
-              exec -T backend-app \
-              php artisan optimize
+              docker ps -a \
+                --format '{{.ID}} {{.Names}}' \
+                | awk '$2 ~ /^[a-f0-9]+_car-dismantler-/ {print $1}' \
+                | xargs -r docker rm -f
 
-            echo "===================================="
-            echo "Container Status"
-            echo "===================================="
+              echo "===================================="
+              echo "Starting Fresh Containers"
+              echo "===================================="
 
-            docker compose \
-              --env-file .env.production \
-              -f docker-compose.production.yml \
-              ps
+              $COMPOSE up -d --force-recreate --remove-orphans
 
-            echo "===================================="
-            echo "Backend Health Check"
-            echo "===================================="
+              echo "Waiting for containers..."
+              sleep 15
 
-            curl \
-              --fail \
-              --retry 20 \
-              --retry-delay 3 \
-              --retry-connrefused \
-              http://127.0.0.1:8081/api/test
+              echo "===================================="
+              echo "Running Migrations and Seeders"
+              echo "===================================="
 
-            echo "===================================="
-            echo "Cleaning Docker Images"
-            echo "===================================="
+              $COMPOSE exec -T backend-app \
+                php artisan migrate --seed --force
 
-            docker image prune -f
+              echo "===================================="
+              echo "Clearing Laravel Cache"
+              echo "===================================="
 
-            echo "===================================="
-            echo "Deployment Completed Successfully"
-            echo "===================================="
+              $COMPOSE exec -T backend-app \
+                php artisan optimize:clear
+
+              echo "===================================="
+              echo "Optimizing Laravel"
+              echo "===================================="
+
+              $COMPOSE exec -T backend-app \
+                php artisan optimize
+
+              echo "===================================="
+              echo "Container Status"
+              echo "===================================="
+
+              $COMPOSE ps
+
+              echo "===================================="
+              echo "Backend Health Check"
+              echo "===================================="
+
+              curl \
+                --fail \
+                --retry 20 \
+                --retry-delay 3 \
+                --retry-connrefused \
+                http://127.0.0.1:8081/api/test
+
+              echo "===================================="
+              echo "Removing Unused Docker Images"
+              echo "===================================="
+
+              docker image prune -f
+
+              echo "===================================="
+              echo "Deployment Completed Successfully"
+              echo "===================================="
+
+            ) 9>/tmp/car-dismantler-deploy.lock
+            
