@@ -1,3 +1,4 @@
+```yaml
 name: Deploy Production
 
 on:
@@ -23,61 +24,99 @@ jobs:
           script: |
             set -e
 
+            echo "===================================="
+            echo "Updating Backend"
+            echo "===================================="
+            cd ~/car-dismantler/car-dismantler-be
+            git fetch origin master
+            git reset --hard origin/master
+
+            echo "===================================="
+            echo "Updating Frontend"
+            echo "===================================="
+            cd ~/car-dismantler/car-dismantler-fe
+            git fetch origin master
+            git reset --hard origin/master
+
+            echo "===================================="
+            echo "Building Docker Images"
+            echo "===================================="
             cd ~/car-dismantler
 
-            echo "Updating backend..."
-            cd car-dismantler-be
-            git fetch origin master
-            git reset --hard origin/master
-
-            echo "Updating frontend..."
-            cd ../car-dismantler-fe
-            git fetch origin master
-            git reset --hard origin/master
-
-            echo "Returning to deployment directory..."
-            cd ..
-
-            echo "Building frontend and backend..."
             docker compose \
               --env-file .env.production \
               -f docker-compose.production.yml \
               build --no-cache
 
-            echo "Starting containers..."
+            echo "===================================="
+            echo "Recreating Containers"
+            echo "===================================="
+
             docker compose \
               --env-file .env.production \
               -f docker-compose.production.yml \
-              up -d --remove-orphans
+              up -d --force-recreate --remove-orphans
 
-            echo "Running Laravel migrations..."
+            echo "Waiting for containers..."
+            sleep 10
+
+            echo "===================================="
+            echo "Running Migrations & Seeders"
+            echo "===================================="
+
             docker compose \
               --env-file .env.production \
               -f docker-compose.production.yml \
               exec -T backend-app \
-              php artisan migrate --force
+              php artisan migrate --seed --force
 
-            echo "Clearing Laravel caches..."
+            echo "===================================="
+            echo "Clearing Cache"
+            echo "===================================="
+
             docker compose \
               --env-file .env.production \
               -f docker-compose.production.yml \
               exec -T backend-app \
               php artisan optimize:clear
 
-            echo "Optimizing Laravel..."
+            echo "===================================="
+            echo "Optimizing Laravel"
+            echo "===================================="
+
             docker compose \
               --env-file .env.production \
               -f docker-compose.production.yml \
               exec -T backend-app \
               php artisan optimize
 
-            echo "Removing unused Docker images..."
-            docker image prune -f
+            echo "===================================="
+            echo "Container Status"
+            echo "===================================="
 
-            echo "Container status:"
             docker compose \
               --env-file .env.production \
               -f docker-compose.production.yml \
               ps
 
-            echo "Deployment completed successfully."
+            echo "===================================="
+            echo "Backend Health Check"
+            echo "===================================="
+
+            curl \
+              --fail \
+              --retry 20 \
+              --retry-delay 3 \
+              --retry-connrefused \
+              http://127.0.0.1:8081/api/test
+
+            echo "===================================="
+            echo "Cleaning Docker Images"
+            echo "===================================="
+
+            docker image prune -f
+
+            echo "===================================="
+            echo "Deployment Completed Successfully"
+            echo "===================================="
+```
